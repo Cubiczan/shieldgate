@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { UserRole } from './authz-types';
 import { importJWK, jwtVerify, type JWTPayload } from 'jose';
+import { AuthZUnavailableError } from './authz';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -105,13 +106,33 @@ type RouteHandler = (
   request: AuthenticatedRequest,
 ) => Promise<Response> | Response;
 
+// Invoke the wrapped handler, translating an AuthZUnavailableError (SpiceDB
+// timeout / transport failure) into a 503 instead of letting it fail-open or
+// surface as an opaque 500.
+async function runHandler(
+  handler: RouteHandler,
+  request: AuthenticatedRequest,
+): Promise<Response> {
+  try {
+    return await handler(request);
+  } catch (err) {
+    if (err instanceof AuthZUnavailableError) {
+      return NextResponse.json(
+        { error: 'AUTHZ_UNAVAILABLE', reason: err.message },
+        { status: 503 },
+      );
+    }
+    throw err;
+  }
+}
+
 export function withAuth(handler: RouteHandler): RouteHandler {
   return async (request: Request): Promise<Response> => {
     const { pathname } = new URL(request.url);
 
     // Skip auth for public paths
     if (isPublicPath(pathname)) {
-      return handler(request as AuthenticatedRequest);
+      return runHandler(handler, request as AuthenticatedRequest);
     }
 
     // ── Dev bypass (danger: never enable in production) ──────────────────
@@ -119,7 +140,7 @@ export function withAuth(handler: RouteHandler): RouteHandler {
       const role = DEV_DEFAULT_ROLE;
       const userId = 'dev_user';
       const augmented = Object.assign(request, { authRole: role, authUserId: userId });
-      return handler(augmented);
+      return runHandler(handler, augmented);
     }
 
     // ── Normal auth flow ──────────────────────────────────────────────────
@@ -135,7 +156,7 @@ export function withAuth(handler: RouteHandler): RouteHandler {
 
       const { role, userId } = await verifyToken(token);
       const augmented = Object.assign(request, { authRole: role, authUserId: userId });
-      return handler(augmented);
+      return runHandler(handler, augmented);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Authentication failed';
       return NextResponse.json(

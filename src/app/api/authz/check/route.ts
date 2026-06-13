@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkToolPermission, checkIndexPermission, getRolePermissions } from '@/lib/authz';
+import { checkToolPermission, checkIndexPermission, getRolePermissions, AuthZUnavailableError } from '@/lib/authz';
 import { db } from '@/lib/db';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth-middleware';
 
@@ -42,6 +42,7 @@ export const POST = withAuth(async (request: AuthenticatedRequest) => {
       timestamp: decision.timestamp,
     });
   } catch (error) {
+    if (error instanceof AuthZUnavailableError) throw error;
     return NextResponse.json({ error: 'Permission check failed' }, { status: 500 });
   }
 });

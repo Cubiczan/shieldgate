@@ -1,6 +1,22 @@
 import { getAuthZedClient, isAuthZedConfigured, v1 } from "./authzed-client";
+import { withTimeout, isResilienceError } from "./resilience";
 export { type UserRole, type AuthZDecision, AUTHZED_SCHEMA, ROLES } from "./authz-types";
 import type { UserRole, AuthZDecision } from "./authz-types";
+
+/** Per-call deadline for SpiceDB gRPC checks. Breach -> AuthZUnavailableError. */
+const SPICEDB_TIMEOUT_MS = 2000;
+
+/**
+ * Raised when SpiceDB is configured but the authorization decision could not be
+ * obtained (timeout / transport error). Routes should translate this into a 503
+ * rather than silently degrading to simulation, which would be a fail-open.
+ */
+export class AuthZUnavailableError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(message);
+    this.name = "AuthZUnavailableError";
+  }
+}
 
 // ---------- Real SpiceDB permission checks ----------
 
@@ -37,7 +53,11 @@ async function spicedbCheckPermission(
   });
 
   const { promises } = client;
-  const response = await promises.checkPermission(request);
+  const response = await withTimeout(
+    promises.checkPermission(request),
+    SPICEDB_TIMEOUT_MS,
+    `SpiceDB checkPermission ${resourceType}:${resourceId}#${permission}`,
+  );
 
   const allowed =
     response.permissionship ===
@@ -122,8 +142,12 @@ async function spicedbCheckToolPermission(
       source: "spicedb",
     };
   } catch (error) {
-    console.error("[AuthZed] SpiceDB check failed, falling back to simulation:", error);
-    return simCheckToolPermission(role, toolName, index);
+    // SpiceDB is configured but unreachable/slow. Do NOT silently fall back to
+    // simulation — that would fail-open the authorization decision. Surface a
+    // typed error so the route can return 503.
+    const detail = isResilienceError(error) && error.kind === "timeout" ? "timed out" : "failed";
+    console.error(`[AuthZed] SpiceDB tool check ${detail}:`, error);
+    throw new AuthZUnavailableError(`SpiceDB authorization check ${detail}`, error);
   }
 }
 
@@ -154,8 +178,9 @@ async function spicedbCheckIndexPermission(
       source: "spicedb",
     };
   } catch (error) {
-    console.error("[AuthZed] SpiceDB check failed, falling back to simulation:", error);
-    return simCheckIndexPermission(role, index, permission);
+    const detail = isResilienceError(error) && error.kind === "timeout" ? "timed out" : "failed";
+    console.error(`[AuthZed] SpiceDB index check ${detail}:`, error);
+    throw new AuthZUnavailableError(`SpiceDB authorization check ${detail}`, error);
   }
 }
 

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { simulateSplunkQuery, redactEvents } from '@/lib/splunk-sim';
 import { isSplunkConfigured, runSplunkQuery } from '@/lib/splunk-client';
-import { checkToolPermission } from '@/lib/authz';
+import { checkToolPermission, AuthZUnavailableError } from '@/lib/authz';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth-middleware';
 
 export const POST = withAuth(async (request: AuthenticatedRequest) => {
@@ -53,6 +53,8 @@ export const POST = withAuth(async (request: AuthenticatedRequest) => {
       note: role === 'contractor' ? 'Results have been redacted per contractor access policy' : undefined,
     });
   } catch (error) {
+    // SpiceDB unavailable -> surface as 503 (handled by withAuth), never 500.
+    if (error instanceof AuthZUnavailableError) throw error;
     return NextResponse.json({ error: 'Query execution failed' }, { status: 500 });
   }
 });

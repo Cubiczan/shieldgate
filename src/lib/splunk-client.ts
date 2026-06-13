@@ -5,7 +5,13 @@ import type {
   SplunkAlert,
 } from "./splunk-sim";
 
+import { withTimeout } from "./resilience";
+
 const splunkSdk = require("splunk-sdk");
+
+// Per-call deadline for Splunk SDK callbacks, which expose no native timeout.
+// On breach the caller is released with a ResilienceError (kind "timeout").
+const SPLUNK_TIMEOUT_MS = 8000;
 
 let service: any = null;
 
@@ -44,7 +50,7 @@ export async function runSplunkQuery(
   const sid = `sid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const start = Date.now();
 
-  return new Promise((resolve, reject) => {
+  return withTimeout(new Promise<SplunkQueryResult>((resolve, reject) => {
     const searchQuery = spl.startsWith("search ") ? spl : `search ${spl}`;
 
     svc.oneshotSearch(
@@ -74,13 +80,13 @@ export async function runSplunkQuery(
         });
       }
     );
-  });
+  }), SPLUNK_TIMEOUT_MS, "Splunk oneshotSearch");
 }
 
 export async function getSplunkIndexes(): Promise<SplunkIndex[]> {
   const svc = getSplunkService();
 
-  return new Promise((resolve, reject) => {
+  return withTimeout(new Promise<SplunkIndex[]>((resolve, reject) => {
     svc.indexes().fetch((err: any, indexes: any) => {
       if (err) {
         reject(new Error(`Failed to fetch indexes: ${err.message || err}`));
@@ -106,13 +112,13 @@ export async function getSplunkIndexes(): Promise<SplunkIndex[]> {
 
       resolve(result);
     });
-  });
+  }), SPLUNK_TIMEOUT_MS, "Splunk indexes.fetch");
 }
 
 export async function getSplunkAlerts(): Promise<SplunkAlert[]> {
   const svc = getSplunkService();
 
-  return new Promise((resolve, reject) => {
+  return withTimeout(new Promise<SplunkAlert[]>((resolve, reject) => {
     svc.savedSearches().fetch((err: any, searches: any) => {
       if (err) {
         reject(new Error(`Failed to fetch alerts: ${err.message || err}`));
@@ -141,7 +147,7 @@ export async function getSplunkAlerts(): Promise<SplunkAlert[]> {
 
       resolve(alerts);
     });
-  });
+  }), SPLUNK_TIMEOUT_MS, "Splunk savedSearches.fetch");
 }
 
 export async function getSplunkIndexDetail(
@@ -149,7 +155,7 @@ export async function getSplunkIndexDetail(
 ): Promise<SplunkIndex | null> {
   const svc = getSplunkService();
 
-  return new Promise((resolve, reject) => {
+  return withTimeout(new Promise<SplunkIndex | null>((resolve, reject) => {
     svc.indexes().fetch((err: any, indexes: any) => {
       if (err) {
         reject(err);
@@ -174,7 +180,7 @@ export async function getSplunkIndexDetail(
         status: props.disabled === "1" ? "offline" : "online",
       });
     });
-  });
+  }), SPLUNK_TIMEOUT_MS, "Splunk indexes.fetch (detail)");
 }
 
 export { redactEvents } from "./splunk-sim";
