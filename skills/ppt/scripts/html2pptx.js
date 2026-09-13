@@ -181,10 +181,33 @@ function applyEmphasisFont(slideData, emphasisFont) {
   }
 }
 
+// Resolve user/HTML paths and reject anything that escapes the allowed base dir.
+function resolveContainedPath(inputPath, baseDir = process.cwd()) {
+  if (typeof inputPath !== 'string' || inputPath.length === 0 || inputPath.includes('\0')) {
+    throw new Error('Invalid path');
+  }
+  const base = path.resolve(baseDir);
+  let stripped = inputPath;
+  if (stripped.startsWith('file://')) {
+    stripped = stripped.slice('file://'.length);
+    try { stripped = decodeURIComponent(stripped); } catch (_) { /* keep raw */ }
+  }
+  const resolved = path.resolve(base, stripped);
+  const relative = path.relative(base, resolved);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`Path is outside the allowed directory: ${inputPath}`);
+  }
+  return resolved;
+}
+
 // Helper: Fix image path if file extension doesn't match actual format
 function fixImageExtension(imagePath, tmpDir) {
+  if (/^(https?:|data:|blob:)/i.test(imagePath)) {
+    return imagePath;
+  }
+  const safePath = resolveContainedPath(imagePath);
   try {
-    const fd = fs.openSync(imagePath, 'r');
+    const fd = fs.openSync(safePath, 'r');
     const buf = Buffer.alloc(12);
     fs.readSync(fd, buf, 0, 12, 0);
     fs.closeSync(fd);
@@ -195,19 +218,19 @@ function fixImageExtension(imagePath, tmpDir) {
     else if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) actualExt = '.gif';
     else if (buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57 && buf[9] === 0x45) actualExt = '.webp';
 
-    if (!actualExt) return imagePath;
+    if (!actualExt) return safePath;
 
-    const currentExt = path.extname(imagePath).toLowerCase();
+    const currentExt = path.extname(safePath).toLowerCase();
     if (currentExt === actualExt || (currentExt === '.jpeg' && actualExt === '.jpg') || (currentExt === '.jpg' && actualExt === '.jpeg')) {
-      return imagePath;
+      return safePath;
     }
 
     // Extension mismatch: copy with correct extension
-    const fixedPath = path.join(tmpDir, path.basename(imagePath, currentExt) + actualExt);
-    fs.copyFileSync(imagePath, fixedPath);
+    const fixedPath = path.join(tmpDir, path.basename(safePath, currentExt) + actualExt);
+    fs.copyFileSync(safePath, fixedPath);
     return fixedPath;
   } catch (e) {
-    return imagePath;
+    return safePath;
   }
 }
 
@@ -1222,6 +1245,8 @@ async function html2pptx(htmlFile, pres, options = {}) {
     fontConfig = null  // { cjk: 'SimHei', latin: 'Century Gothic', emphasis: 'Franklin Gothic Medium' }
   } = options;
 
+  const filePath = resolveContainedPath(htmlFile);
+
   try {
     // Use Chrome on macOS, default Chromium on Unix
     const launchOptions = { env: { TMPDIR: tmpDir } };
@@ -1234,7 +1259,6 @@ async function html2pptx(htmlFile, pres, options = {}) {
     let bodyDimensions;
     let slideData;
 
-    const filePath = path.isAbsolute(htmlFile) ? htmlFile : path.join(process.cwd(), htmlFile);
     const validationErrors = [];
 
     try {

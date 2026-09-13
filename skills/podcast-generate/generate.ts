@@ -97,8 +97,26 @@ function parseArgs(): { [key: string]: any } {
   return result;
 }
 
+function resolveContainedPath(inputPath: string, baseDir = process.cwd()): string {
+  if (typeof inputPath !== 'string' || inputPath.length === 0 || inputPath.includes('\0')) {
+    throw new Error('Invalid path');
+  }
+  const base = path.resolve(baseDir);
+  let stripped = inputPath;
+  if (stripped.startsWith('file://')) {
+    stripped = stripped.slice('file://'.length);
+    try { stripped = decodeURIComponent(stripped); } catch { /* keep raw */ }
+  }
+  const resolved = path.resolve(base, stripped);
+  const relative = path.relative(base, resolved);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`Path is outside the allowed directory: ${inputPath}`);
+  }
+  return resolved;
+}
+
 function readText(filePath: string): string {
-  let content = fs.readFileSync(filePath, 'utf-8');
+  let content = fs.readFileSync(resolveContainedPath(filePath), 'utf-8');
   content = content.replace(/\r\n/g, '\n');
   content = content.replace(/\n{3,}/g, '\n\n');
   content = content.replace(/[ \t]{2,}/g, ' ');
