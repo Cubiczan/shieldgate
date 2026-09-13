@@ -35,6 +35,25 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+// Resolve user paths and reject anything that escapes the allowed base dir.
+function resolveContainedPath(inputPath, baseDir = process.cwd()) {
+  if (typeof inputPath !== 'string' || inputPath.length === 0 || inputPath.includes('\0')) {
+    throw new Error('Invalid path');
+  }
+  const base = path.resolve(baseDir);
+  let stripped = inputPath;
+  if (stripped.startsWith('file://')) {
+    stripped = stripped.slice('file://'.length);
+    try { stripped = decodeURIComponent(stripped); } catch (_) { /* keep raw */ }
+  }
+  const resolved = path.resolve(base, stripped);
+  const relative = path.relative(base, resolved);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`Path is outside the allowed directory: ${inputPath}`);
+  }
+  return resolved;
+}
+
 // ── Chromium resolution (shared logic with html2pdf-next.js) ──
 
 function resolveChromium(chromiumObj) {
@@ -99,7 +118,13 @@ Options:
 
 async function main() {
   const { input, output, width, maxHeight } = parseArgs(process.argv);
-  const absIn = path.resolve(input);
+  let absIn;
+  try {
+    absIn = resolveContainedPath(input);
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
   const absOut = path.resolve(output);
 
   if (!fs.existsSync(absIn)) {

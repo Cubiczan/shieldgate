@@ -26,6 +26,25 @@ const { execSync, spawnSync } = require('child_process');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// Resolve user paths and reject anything that escapes the allowed base dir.
+function resolveContainedPath(inputPath, baseDir = process.cwd()) {
+  if (typeof inputPath !== 'string' || inputPath.length === 0 || inputPath.includes('\0')) {
+    throw new Error('Invalid path');
+  }
+  const base = path.resolve(baseDir);
+  let stripped = inputPath;
+  if (stripped.startsWith('file://')) {
+    stripped = stripped.slice('file://'.length);
+    try { stripped = decodeURIComponent(stripped); } catch (_) { /* keep raw */ }
+  }
+  const resolved = path.resolve(base, stripped);
+  const relative = path.relative(base, resolved);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`Path is outside the allowed directory: ${inputPath}`);
+  }
+  return resolved;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Playwright / Chromium resolution (self-contained, no external helper)
 // ═══════════════════════════════════════════════════════════════════
@@ -524,12 +543,19 @@ async function postProcess(pdfPath, options = {}) {
   // Merge additional PDFs
   if (options.mergeFiles && options.mergeFiles.length) {
     for (const mf of options.mergeFiles) {
-      if (!fs.existsSync(mf)) {
+      let donorPath;
+      try {
+        donorPath = resolveContainedPath(mf);
+      } catch (err) {
+        console.error(`✗ ${err.message}`);
+        process.exit(1);
+      }
+      if (!fs.existsSync(donorPath)) {
         console.log(`  ⚠ Merge file not found: ${mf}`);
         continue;
       }
-      console.log(`  📎 Merging: ${path.basename(mf)}`);
-      const donorBytes = fs.readFileSync(mf);
+      console.log(`  📎 Merging: ${path.basename(donorPath)}`);
+      const donorBytes = fs.readFileSync(donorPath);
       const donorDoc = await PDFDocument.load(donorBytes);
       const copiedPages = await doc.copyPages(donorDoc, donorDoc.getPageIndices());
       copiedPages.forEach(p => doc.addPage(p));
@@ -550,7 +576,15 @@ async function postProcess(pdfPath, options = {}) {
 async function convert(inputFile, outputFile, customCSS, options = {}) {
   const { width, height, mergeFiles, title } = options;
 
-  if (!fs.existsSync(inputFile)) {
+  let absIn;
+  try {
+    absIn = resolveContainedPath(inputFile);
+  } catch (err) {
+    console.error(`✗ ${err.message}`);
+    process.exit(1);
+  }
+
+  if (!fs.existsSync(absIn)) {
     console.error(`✗ File not found: ${inputFile}`);
     process.exit(1);
   }
@@ -570,7 +604,6 @@ async function convert(inputFile, outputFile, customCSS, options = {}) {
     console.log(`⚠ Using fallback Chromium: ${bInfo.executablePath}`);
   }
 
-  const absIn = path.resolve(inputFile);
   const absOut = path.resolve(outputFile);
 
   console.log(`\n🔄 Converting ${path.basename(inputFile)}...`);
@@ -579,11 +612,18 @@ async function convert(inputFile, outputFile, customCSS, options = {}) {
   // Read and optionally inject CSS
   let html = fs.readFileSync(absIn, 'utf-8');
   if (customCSS) {
-    if (!fs.existsSync(customCSS)) {
+    let safeCss;
+    try {
+      safeCss = resolveContainedPath(customCSS);
+    } catch (err) {
+      console.error(`✗ ${err.message}`);
+      process.exit(1);
+    }
+    if (!fs.existsSync(safeCss)) {
       console.error(`✗ CSS file not found: ${customCSS}`);
       process.exit(1);
     }
-    const tag = `<style>${fs.readFileSync(customCSS, 'utf-8')}</style>`;
+    const tag = `<style>${fs.readFileSync(safeCss, 'utf-8')}</style>`;
     html = html.includes('</head>') ? html.replace('</head>', tag + '\n</head>') : tag + '\n' + html;
     // Write modified HTML for Playwright to load
     const tmpHtml = absIn + '.tmp.html';
